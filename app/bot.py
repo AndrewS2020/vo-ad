@@ -94,6 +94,12 @@ async def _handle_verdict(message: Message, user_id: int, verdict: dict) -> None
     if status == "recheck_house":
         pending[user_id] = verdict
         logger.info("[%s] recheck_house reason: %s", user_id, verdict.get("reason", ""))
+        if verdict.get("reason") == "street name absorbed the spoken number":
+            await message.answer(
+                f"<b>{verdict['street']}</b> — саме так називається ця вулиця, "
+                f"номер будинку окремо. Продиктуйте, будь ласка, номер будинку."
+            )
+            return
         range_note = ""
         house_range = verdict.get("house_range")
         if house_range and house_range[0] is not None:
@@ -217,6 +223,7 @@ def _match_house_on_chosen_street(chosen_key: str, house_raw: str, transcript: s
             "district": street["district"],
             "house_range": street["range"],
             "reason": f"house {house['main']} vs range {street['range']}",
+            "key": chosen_key,
             "query": {"street": street["name"], "type": street["type"],
                       "house": house_raw, "alt": None},
         }
@@ -239,6 +246,19 @@ def _match_house_on_chosen_street(chosen_key: str, house_raw: str, transcript: s
             result["similar_houses"] = same_number
 
     return result
+
+
+def _resolve_house_retry(verdict: dict, transcript: str, house_number: str) -> dict:
+    """Resolves a retried house number against a pending recheck_house
+    verdict. If the street is already pinned to a specific registry key (set
+    when the street itself was picked explicitly, e.g. from the numbered-
+    street disambiguation branch), match directly against it — re-resolving
+    by name can re-trigger disambiguation among near-identical street names
+    ('Садова 3' vs 'Садова 31' vs 'Садова 23') instead of finishing the house
+    lookup. Otherwise falls back to a full name-based resolve()."""
+    if verdict.get("key"):
+        return _match_house_on_chosen_street(verdict["key"], house_number, transcript)
+    return _retry_house_verdict(verdict, transcript, house_number)
 
 
 @router.message(CommandStart())
@@ -298,7 +318,7 @@ async def on_voice(message: Message) -> None:
         logger.info("[%s] treating voice as house-number retry: raw=%r normalized=%r",
                     user_id, result.transcription, house_number)
         verdict = await asyncio.to_thread(
-            _retry_house_verdict, pending_verdict, result.transcription, house_number)
+            _resolve_house_retry, pending_verdict, result.transcription, house_number)
     else:
         verdict = await asyncio.to_thread(resolve, result.model_dump())
     logger.info("[%s] verdict: %s", user_id, verdict)
@@ -319,7 +339,7 @@ async def on_house_retry(message: Message) -> None:
     logger.info("[%s] text house-number retry: raw=%r normalized=%r",
                 user_id, message.text, house_number)
     new_verdict = await asyncio.to_thread(
-        _retry_house_verdict, verdict, message.text, house_number)
+        _resolve_house_retry, verdict, message.text, house_number)
     logger.info("[%s] verdict: %s", user_id, new_verdict)
     await _handle_verdict(message, user_id, new_verdict)
 
@@ -368,11 +388,34 @@ async def on_pick_option(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
+    chosen = options[index]
+    chosen_key = chosen["key"]
+
+    if chosen.get("needs_house"):
+        # The number Gemini took for a house number turned out to be part of
+        # this street's own name ('Садова 3' is a distinct street from
+        # 'Садова') — it says nothing about the real house, so ask instead of
+        # guessing with it.
+        logger.info("[%s] picked numbered-street option %s: key=%s, house unknown",
+                    user_id, index, chosen_key)
+        new_verdict = {
+            "status": "recheck_house",
+            "street": chosen["street"],
+            "district": chosen["street_district"],
+            "house_range": None,
+            "reason": "street name absorbed the spoken number",
+            "key": chosen_key,
+            "query": {"street": chosen["street"], "type": None,
+                      "house": "", "alt": None},
+        }
+        await _handle_verdict(callback.message, user_id, new_verdict)
+        await callback.answer()
+        return
+
     # ambiguous only resolves the street; the house was never matched against
     # it. Match directly against the chosen street rather than re-resolving
     # by name+district, which can land on another >1-candidate tie (several
     # "Академіка X" streets in one district) and loop back into disambiguation.
-    chosen_key = options[index]["key"]
     house = verdict.get("query", {}).get("house", "")
     logger.info("[%s] picked option %s: key=%s house=%r",
                 user_id, index, chosen_key, house)

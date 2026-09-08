@@ -20,9 +20,12 @@ import re
 
 from app.core.addr_index import (
     learn_alias,
+    load,
     log_interaction,
     match_address,
+    match_street,
     norm_text,
+    street_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,33 @@ def build_house(house_number: str | None, building_block: str | None) -> str:
     return num
 
 
+def _numbered_street_option(st_name: str, house: str, district: str | None) -> dict | None:
+    """324 registry streets have a bare number baked into their own name
+    ('Садова 3', 'Лінія 5', 'Набережна 1') — a separate street from 'Садова'
+    with its own house range. "Садова, будинок 3" spoken aloud is
+    indistinguishable from a client naming the street 'Садова 3' — nothing in
+    the audio marks which number is the street name and which is the house.
+    Checks whether '<name> <house>' is itself a registry street; if so it's
+    returned as an extra disambiguation candidate rather than silently
+    assumed away."""
+    combined = f"{st_name} {house}".strip()
+    index = load()
+    hits = match_street(combined, index, district=district, limit=1)
+    if hits and hits[0][1] >= 99:
+        s = hits[0][0]
+        return {"key": street_key(s),
+                "label": f"{s['type']} {s['name']} ({s['district']})",
+                "score": 100.0,
+                "street": f"{s['type']} {s['name']}",
+                "street_district": s["district"],
+                # The number that looked like a house number turned out to be
+                # part of this street's own name, so it tells us nothing about
+                # the actual house — the caller must re-ask for it, never
+                # match this option's key against the original house number.
+                "needs_house": True}
+    return None
+
+
 def resolve(result: dict) -> dict:
     """Takes ProcessedResult.model_dump(). Returns the match_address verdict,
     with the Gemini payload attached for the confirmation step."""
@@ -124,6 +154,22 @@ def resolve(result: dict) -> dict:
             if alt_verdict.get("status") == "ok":
                 alt_verdict["matched_via"] = "alternative_name"
                 verdict = alt_verdict
+
+    # A bare, unambiguous house number is exactly the case where the
+    # "<street> <number>" name collision bites — check it regardless of how
+    # confidently the plain interpretation matched.
+    if house.isdigit():
+        numbered = _numbered_street_option(st_name, house, addr.get("district"))
+        if numbered:
+            if verdict.get("status") == "ok":
+                plain_option = {"key": verdict["key"], "label": verdict["formatted"],
+                                "score": verdict.get("score", 100.0)}
+                verdict = {"status": "ambiguous",
+                          "options": [plain_option, numbered]}
+            elif verdict.get("status") in ("no_street", "ambiguous"):
+                options = verdict.get("options", [])
+                if numbered["key"] not in {o["key"] for o in options}:
+                    verdict = {"status": "ambiguous", "options": options + [numbered]}
 
     verdict["transcript"] = result.get("transcription", "")
     verdict["query"] = {"street": st_name, "type": st_type, "house": house,
