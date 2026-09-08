@@ -69,7 +69,7 @@ class GeminiService:
         Transcription via the Gemini Live API WebSocket (bidiGenerateContent).
         """
         logger.info(f"Використовується Gemini Live WebSocket стрімінг для {self.model_name}...")
-        audio_bytes = path.read_bytes()
+        audio_bytes = await asyncio.to_thread(path.read_bytes)
         
         transcript_parts = []
         live_config = types.LiveConnectConfig(
@@ -132,7 +132,7 @@ class GeminiService:
         if "transcribe" in self.model_name.lower() and "live" not in self.model_name.lower():
             try:
                 logger.info(f"Спроба прямої транскрибації через {self.model_name}...")
-                audio_bytes = path.read_bytes()
+                audio_bytes = await asyncio.to_thread(path.read_bytes)
                 audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
                 
                 # Викликаємо без system_instruction
@@ -152,7 +152,7 @@ class GeminiService:
 
     async def _process_multimodal_audio(self, path: Path, mime_type: str) -> ProcessedResult:
         """Processes the audio file directly via generate_content, with automatic fallback."""
-        audio_bytes = path.read_bytes()
+        audio_bytes = await asyncio.to_thread(path.read_bytes)
         audio_part = types.Part.from_bytes(
             data=audio_bytes,
             mime_type=mime_type

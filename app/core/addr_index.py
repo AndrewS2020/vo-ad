@@ -24,7 +24,11 @@ from pathlib import Path
 from rapidfuzz import fuzz, process
 from rapidfuzz.distance import JaroWinkler
 
-DATA_DIR = Path("data")
+# Anchored to this file's location (app/core/addr_index.py -> project root),
+# not the process's current working directory, so `data/` resolves correctly
+# regardless of where the bot or CLI is launched from.
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = BASE_DIR / "data"
 INDEX_FILE = DATA_DIR / "addr_index.pkl"
 DB_FILE = DATA_DIR / "addr.db"
 
@@ -123,6 +127,9 @@ def parse_house_variants(raw: str) -> list:
 
 # ---------------------------------------------------------------- build
 
+_index_cache: dict | None = None
+
+
 def build(csv_path: str) -> dict:
     streets: dict = {}
     unparsed: list = []
@@ -168,13 +175,22 @@ def build(csv_path: str) -> dict:
     DATA_DIR.mkdir(exist_ok=True)
     INDEX_FILE.write_bytes(pickle.dumps(index))
     init_db()
+    global _index_cache
+    _index_cache = index
     return index
 
 
 def load() -> dict:
-    if not INDEX_FILE.exists():
-        sys.exit("Index not built. Run: python -m app.core.addr_index build data/addr.csv")
-    return pickle.loads(INDEX_FILE.read_bytes())
+    """Loads the address index, caching it in memory after the first call.
+    match_address()/match_street() call this on every request, and
+    re-reading + unpickling a 2MB+ file each time blocks the asyncio event
+    loop in the caller for no reason — the index never changes at runtime."""
+    global _index_cache
+    if _index_cache is None:
+        if not INDEX_FILE.exists():
+            sys.exit("Index not built. Run: python -m app.core.addr_index build data/addr.csv")
+        _index_cache = pickle.loads(INDEX_FILE.read_bytes())
+    return _index_cache
 
 
 def street_key(s: dict) -> str:
@@ -183,8 +199,23 @@ def street_key(s: dict) -> str:
 
 # ---------------------------------------------------------------- sqlite
 
+_db_cache: sqlite3.Connection | None = None
+
+
 def init_db() -> sqlite3.Connection:
-    db = sqlite3.connect(DB_FILE)
+    """Opens (once) and caches the SQLite connection. Every call used to
+    re-open the file from scratch, which is blocking I/O that adds up across
+    a busy bot process for no benefit — the schema only needs creating once,
+    and the connection is cheap to reuse. check_same_thread=False because
+    callers may run this from a worker thread via asyncio.to_thread; WAL mode
+    lets that concurrent access happen without 'database is locked' errors."""
+    global _db_cache
+    if _db_cache is not None:
+        return _db_cache
+
+    DATA_DIR.mkdir(exist_ok=True)
+    db = sqlite3.connect(DB_FILE, check_same_thread=False)
+    db.execute("PRAGMA journal_mode = WAL;")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS aliases (
             alias_norm TEXT NOT NULL,
@@ -203,6 +234,7 @@ def init_db() -> sqlite3.Connection:
         );
     """)
     db.commit()
+    _db_cache = db
     return db
 
 

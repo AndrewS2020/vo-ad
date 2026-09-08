@@ -15,6 +15,7 @@ from aiogram.types import (
     Message,
     Voice,
 )
+from google.genai.errors import APIError
 
 from app.config import settings
 from app.core.addr_index import load as load_addr_index
@@ -266,10 +267,18 @@ async def on_voice(message: Message) -> None:
             result = await gemini.process_audio(ogg_path)
         except TelegramRetryAfter:
             raise
-        except Exception as exc:  # Gemini 429 / free-tier limits / transient errors.
-            logger.warning("[%s] Gemini processing failed: %s", user_id, exc)
+        except APIError as exc:  # Gemini 429 / free-tier limits / transient API errors.
+            logger.warning("[%s] Gemini API error: %s", user_id, exc)
             await message.answer(
                 "Зараз забагато запитів, спробуйте, будь ласка, за хвилину ще раз."
+            )
+            return
+        except Exception:  # Actual bugs (bad prompt file, malformed JSON, etc.) —
+            # never mask these as a rate limit; log the full traceback so they
+            # surface instead of silently looking like normal Gemini backpressure.
+            logger.exception("[%s] Unexpected error processing voice message", user_id)
+            await message.answer(
+                "Сталася технічна помилка. Спробуйте, будь ласка, ще раз."
             )
             return
     finally:
@@ -288,9 +297,10 @@ async def on_voice(message: Message) -> None:
         house_number = _normalize_house_number(result.transcription)
         logger.info("[%s] treating voice as house-number retry: raw=%r normalized=%r",
                     user_id, result.transcription, house_number)
-        verdict = _retry_house_verdict(pending_verdict, result.transcription, house_number)
+        verdict = await asyncio.to_thread(
+            _retry_house_verdict, pending_verdict, result.transcription, house_number)
     else:
-        verdict = resolve(result.model_dump())
+        verdict = await asyncio.to_thread(resolve, result.model_dump())
     logger.info("[%s] verdict: %s", user_id, verdict)
     await _handle_verdict(message, user_id, verdict)
 
@@ -308,7 +318,8 @@ async def on_house_retry(message: Message) -> None:
     house_number = _normalize_house_number(message.text)
     logger.info("[%s] text house-number retry: raw=%r normalized=%r",
                 user_id, message.text, house_number)
-    new_verdict = _retry_house_verdict(verdict, message.text, house_number)
+    new_verdict = await asyncio.to_thread(
+        _retry_house_verdict, verdict, message.text, house_number)
     logger.info("[%s] verdict: %s", user_id, new_verdict)
     await _handle_verdict(message, user_id, new_verdict)
 
@@ -333,7 +344,7 @@ async def on_confirm(callback: CallbackQuery) -> None:
     if verdict and verdict.get("key"):
         logger.info("[%s] confirmed: key=%s formatted=%s",
                     user_id, verdict["key"], verdict.get("formatted"))
-        confirm(verdict, verdict["key"])
+        await asyncio.to_thread(confirm, verdict, verdict["key"])
     else:
         logger.warning("[%s] confirm pressed with no pending verdict", user_id)
 
@@ -365,7 +376,8 @@ async def on_pick_option(callback: CallbackQuery) -> None:
     house = verdict.get("query", {}).get("house", "")
     logger.info("[%s] picked option %s: key=%s house=%r",
                 user_id, index, chosen_key, house)
-    new_verdict = _match_house_on_chosen_street(chosen_key, house, verdict.get("transcript", ""))
+    new_verdict = await asyncio.to_thread(
+        _match_house_on_chosen_street, chosen_key, house, verdict.get("transcript", ""))
     logger.info("[%s] verdict: %s", user_id, new_verdict)
     await _handle_verdict(callback.message, user_id, new_verdict)
     await callback.answer()

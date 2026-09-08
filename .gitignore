@@ -2,8 +2,11 @@
 .venv/
 .claude/
 CLAUDE.md
+ARCHITECTURE_REVIEW.md
 __pycache__/
 *.pyc
 data/addr_index.pkl
 data/addr.db
+data/addr.db-shm
+data/addr.db-wal
 temp_audio/
