@@ -20,7 +20,7 @@ from google.genai.errors import APIError
 from app.config import settings
 from app.core.addr_index import load as load_addr_index
 from app.core.addr_index import match_house, street_key
-from app.core.resolve import confirm, resolve
+from app.core.resolve import confirm, reject, resolve
 from app.services.gemini_service import GeminiService
 
 logging.basicConfig(
@@ -347,8 +347,10 @@ async def on_house_retry(message: Message) -> None:
 @router.callback_query(F.data == CONFIRM_NO)
 async def on_reject(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
-    logger.info("[%s] rejected verdict: %s", user_id, pending.get(user_id))
-    pending.pop(user_id, None)
+    verdict = pending.pop(user_id, None)
+    logger.info("[%s] rejected verdict: %s", user_id, verdict)
+    if verdict:
+        await asyncio.to_thread(reject, verdict)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(
         "Добре, продиктуйте, будь ласка, адресу ще раз голосовим повідомленням."
@@ -430,11 +432,19 @@ async def main() -> None:
     logger.info("Starting bot: gemini_model=%s temp_audio_dir=%s",
                 settings.gemini_model, settings.temp_audio_dir)
     bot = Bot(token=settings.telegram_bot_token, default=DefaultBotProperties(parse_mode="HTML"))
-    me = await bot.get_me()
-    logger.info("Connected as @%s (id=%s)", me.username, me.id)
-    dp = Dispatcher()
-    dp.include_router(router)
-    await dp.start_polling(bot)
+    try:
+        me = await bot.get_me()
+        logger.info("Connected as @%s (id=%s)", me.username, me.id)
+        dp = Dispatcher()
+        dp.include_router(router)
+        await dp.start_polling(bot)
+    finally:
+        # aiogram closes the aiohttp session on a clean Ctrl+C, but `pkill`
+        # sends SIGTERM without giving asyncio's signal handling a chance to
+        # run it — this finally block runs regardless of how the process is
+        # asked to stop, so the "Unclosed client session" warning on restart
+        # goes away.
+        await bot.session.close()
 
 
 if __name__ == "__main__":

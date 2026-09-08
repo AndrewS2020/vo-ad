@@ -22,7 +22,6 @@ from collections import defaultdict
 from pathlib import Path
 
 from rapidfuzz import fuzz, process
-from rapidfuzz.distance import JaroWinkler
 
 # Anchored to this file's location (app/core/addr_index.py -> project root),
 # not the process's current working directory, so `data/` resolves correctly
@@ -278,13 +277,16 @@ def match_street(query: str, index: dict, district: str | None = None,
     if district:
         pool = [s for s in pool if s["district"] == district] or pool
 
-    def blend(a: str, b: str, **kw) -> float:
-        # Jaro-Winkler weights the prefix, which is where Ukrainian street
-        # names differ; WRatio alone rewards the shared '-ська' ending.
-        return 0.4 * fuzz.WRatio(a, b) + 0.6 * JaroWinkler.similarity(a, b) * 100
-
+    # token_sort_ratio, not WRatio: many registry names are "Прізвище Ім'я"
+    # ('Бажана Миколи') while clients say "Ім'я Прізвище" ('Миколи Бажана').
+    # WRatio blended with Jaro-Winkler (an earlier version of this scorer)
+    # over-penalized that reordering — Jaro-Winkler rewards a matching
+    # prefix, so a wrong street sharing the first word ('Миколи Волковича')
+    # could outscore the right one written in the other word order.
+    # token_sort_ratio compares the words regardless of order, so it isn't
+    # fooled either way.
     hits = process.extract(q, [s["norm"] for s in pool],
-                           scorer=blend, limit=limit)
+                           scorer=fuzz.token_sort_ratio, limit=limit)
     
     scored = [(pool[i], float(score)) for _, score, i in hits]
 

@@ -198,6 +198,16 @@ def confirm(verdict: dict, chosen_key: str) -> None:
                     verdict.get("options", []), chosen_key)
 
 
+def reject(verdict: dict) -> None:
+    """Call after the user taps 'Ні'/'Жодного'. No alias is learned — a
+    rejection doesn't tell us which street was meant, only that this one
+    wasn't — but the miss is still logged, since a wrong guess is exactly the
+    kind of turn worth mining when tuning the prompt or the matcher."""
+    q = verdict.get("query", {})
+    log_interaction(verdict.get("transcript", ""), q,
+                    verdict.get("options", []), None)
+
+
 if __name__ == "__main__":
     sample = {
         "transcription": "Це на бульварно-квадрявская, дом пятнадцать, корпус 2",

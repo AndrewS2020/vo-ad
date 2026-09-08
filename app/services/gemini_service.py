@@ -34,7 +34,7 @@ class ProcessedResult(BaseModel):
     address: Optional[AddressInfo] = Field(None, description="Детальна інформація про адресу, якщо has_address == true")
 
 
-FALLBACK_MODELS = ["gemini-2.5-flash"]
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
 
 
 def load_system_prompt() -> str:
