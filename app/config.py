@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     # App Settings
     temp_audio_dir: Path = Field(default=BASE_DIR / "temp_audio", alias="TEMP_AUDIO_DIR")
+    # The city the address registry (data/addr.csv) covers. Swapping cities
+    # means swapping the registry data AND this value — the registry itself
+    # decides which streets exist, this just tells Gemini what to expect.
+    city: str = Field(default="Київ", alias="CITY")
 
     def init_dirs(self) -> None:
         """Creates required directories (e.g. temp_audio)."""

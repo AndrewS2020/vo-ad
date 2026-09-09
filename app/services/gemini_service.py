@@ -38,15 +38,20 @@ FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5
 
 
 def load_system_prompt() -> str:
-    """Loads the system prompt strictly from prompts/address_prompt.md."""
+    """Loads the system prompt from prompts/address_prompt.md and fills in
+    the city name from settings — the prompt file itself names no city, so
+    switching to a different address registry only means swapping the
+    registry data and settings.city, not editing this file. Plain string
+    replace, not str.format(): the prompt's JSON example is full of '{' '}'
+    that aren't placeholders, and .format() would choke on them."""
     if not PROMPT_FILE_PATH.exists():
         raise FileNotFoundError(f"Файл системного промпту не знайдено: {PROMPT_FILE_PATH}")
-    
+
     content = PROMPT_FILE_PATH.read_text(encoding="utf-8").strip()
     if not content:
         raise ValueError(f"Файл промпту {PROMPT_FILE_PATH} порожній!")
-    
-    return content
+
+    return content.replace("{city}", settings.city)
 
 
 
@@ -181,7 +186,7 @@ class GeminiService:
                     model=model,
                     contents=[
                         audio_part,
-                        "Розпізнай мовлення, витягни київську адресу та поверни структурований JSON."
+                        f"Розпізнай мовлення, витягни адресу у місті {settings.city} та поверни структурований JSON."
                     ],
                     config=config
                 )
@@ -236,7 +241,7 @@ class GeminiService:
 
                 response = await self.client.aio.models.generate_content(
                     model=model,
-                    contents=[f"Проаналізуй цей текст, витягни адресу у Києві та поверни JSON:\n\n{text}"],
+                    contents=[f"Проаналізуй цей текст, витягни адресу у місті {settings.city} та поверни JSON:\n\n{text}"],
                     config=config
                 )
 
