@@ -277,6 +277,7 @@ def match_street(query: str, index: dict, district: str | None = None,
     if district:
         pool = [s for s in pool if s["district"] == district] or pool
 
+    # EXP-1:
     # token_sort_ratio, not WRatio: many registry names are "Прізвище Ім'я"
     # ('Бажана Миколи') while clients say "Ім'я Прізвище" ('Миколи Бажана').
     # WRatio blended with Jaro-Winkler (an earlier version of this scorer)
@@ -285,8 +286,22 @@ def match_street(query: str, index: dict, district: str | None = None,
     # could outscore the right one written in the other word order.
     # token_sort_ratio compares the words regardless of order, so it isn't
     # fooled either way.
+
+    # EXP-2:
+    # WRatio takes token_sort_ratio as one of its internal components (along
+    # with partial_ratio, which matters for streets people name by surname
+    # only, e.g. 'Балабуєва' for 'Авіаконструктора Петра Балабуєва'). So
+    # WRatio already handles word-order swaps like 'Миколи Бажана' vs
+    # 'Бажана Миколи' on its own — no need to isolate token_sort_ratio.
+    # An earlier attempt blended WRatio with Jaro-Winkler specifically to fix
+    # reordering, but Jaro-Winkler rewards a matching prefix, so a wrong
+    # street sharing the first word ('Миколи Волковича') could outscore the
+    # right one written in the other word order. Plain WRatio has neither
+    # problem.
+
     hits = process.extract(q, [s["norm"] for s in pool],
-                           scorer=fuzz.token_sort_ratio, limit=limit)
+                        #    scorer=fuzz.token_sort_ratio, limit=limit)
+                           scorer=fuzz.WRatio, limit=limit)
     
     scored = [(pool[i], float(score)) for _, score, i in hits]
 
